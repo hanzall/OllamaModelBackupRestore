@@ -151,10 +151,13 @@ def list_backups(backup_root):
         print("No backup folders found.")
         sys.exit(1)
 
-    print("\033[36mValidating backup folders...\033[0m")
+    print("\033[36mValidating backup folder structure...\033[0m")
     invalid_backups = []
     for folder in backup_folders:
-        if not validate_backup_folder_contents(folder):
+        # Only validate folder structure, not contents
+        manifests_path = os.path.join(folder, "manifests", "registry.ollama.ai", "library")
+        blobs_path = os.path.join(folder, "blobs")
+        if not os.path.isdir(manifests_path) or not os.path.isdir(blobs_path):
             invalid_backups.append(folder)
 
     if invalid_backups:
@@ -189,25 +192,10 @@ def get_backup_selection(backup_folders):
             pass
         print("Invalid selection. Please try again.")
 
-def restore_backup(backup_dir):
-    ollama_base = os.getenv('OLLAMA_MODELS')
-    ollama_base='' #For debugging
+def restore_backup(backup_dir, ollama_base):
     if not ollama_base:
-        try:
-            while True:
-                ollama_base = input("OLLAMA_MODELS environment variable not set. Please enter the Ollama base directory: ").strip()
-                if ollama_base.startswith('"') and ollama_base.endswith('"'):
-                    ollama_base = ollama_base[1:-1]
-                if not ollama_base:
-                    print("Error: No directory entered. Please try again.")
-                    continue
-                if not os.path.isdir(ollama_base):
-                    print("Error: Provided directory does not exist. Please try again.")
-                    continue
-                break
-        except Exception as e:
-            print(f"Error: {e}")
-            sys.exit(1)
+        print("Error: Target restore directory not provided")
+        sys.exit(1)
 
     print(f"Restoring backup from {backup_dir} to {ollama_base}...")
 
@@ -276,20 +264,20 @@ def validate_and_get_valid_backups(backup_root):
 
 def validate_backup_folder_contents(backup_folder):
     """
-    Validate if the blob files in the backup folder have correct hashed names matching
-    the contents of the corresponding manifest file.
+    Validate if the blob files in the backup folder exist and optionally check their hashes
+    against the manifest file.
 
     Args:
         backup_folder (str): The path to the backup folder to validate.
 
     Returns:
-        bool: True if all blob files match their hashes in the manifest, False otherwise.
+        bool: True if validation passes, False otherwise.
     """
     manifests_path = os.path.join(backup_folder, "manifests", "registry.ollama.ai", "library")
     blobs_path = os.path.join(backup_folder, "blobs")
 
     if not os.path.isdir(manifests_path) or not os.path.isdir(blobs_path):
-        print(f"Error: Missing required directories in {backup_folder}.")
+        print(f"Error: \033[31mMissing\033[0m required directories in {backup_folder}.")
         return False
 
     for root, _, files in os.walk(manifests_path):
@@ -304,7 +292,8 @@ def validate_backup_folder_contents(backup_folder):
 
             digests = [manifest['config']['digest']]
             digests.extend(layer['digest'] for layer in manifest['layers'])
-            # Check existence of blob files
+
+            # First check existence of blob files
             print("Checking existence of blob files...")
             missing_blob_found = False
             for digest in digests:
@@ -313,32 +302,42 @@ def validate_backup_folder_contents(backup_folder):
                 if not os.path.isfile(blob_file_path):
                     print(f"Error: \033[31mMissing\033[0m blob file {blob_file_name} for digest {digest} in {backup_folder}.")
                     missing_blob_found = True
-            # Validate integrity of blob files (hash validation)
-            print("Validating integrity of blob files (hash validation)...")
-            integrity_error_found = False
-            for digest in digests:
-                blob_file_name = digest.replace(':', '-')
-                blob_file_path = os.path.join(blobs_path, blob_file_name)
-                if os.path.isfile(blob_file_path):
+            
+            if missing_blob_found:
+                return False
+
+            # Ask user if they want to validate hashes
+            while True:
+                check_hashes = input("\nWould you like to validate file hashes? This may take some time for large files. (y/n): ").lower()
+                if check_hashes in ['y', 'n']:
+                    break
+                print("Please enter 'y' for yes or 'n' for no.")
+
+            if check_hashes == 'y':
+                print("\nValidating integrity of blob files (hash validation)...")
+                integrity_error_found = False
+                for digest in digests:
+                    blob_file_name = digest.replace(':', '-')
+                    blob_file_path = os.path.join(blobs_path, blob_file_name)
                     # Validate the hash of the blob file
                     expected_hash = digest.split(':')[1]
                     with open(blob_file_path, 'rb') as blob_file:
                         file_content = blob_file.read()
                         actual_hash = hashlib.sha256(file_content).hexdigest()
-                        # print(f"Computed hash for {blob_file_name}: {actual_hash}")
-                        print(f"\033[35m{blob_file_name}\033[32m OK\033[0m")
-                        if actual_hash != expected_hash:
-                            print(f"\033[31m{blob_file_name}\033[0m \033[38;5;208mMismatch\033[0m \033[35m(@{os.path.basename(backup_folder)})\033[0m")
+                        if actual_hash == expected_hash:
+                            print(f"\033[35m{blob_file_name}\033[32m OK\033[0m")
+                        else:
+                            print(f"\033[31m{blob_file_name}\033[0m \033[31mMismatch\033[0m \033[35m(@{os.path.basename(backup_folder)})\033[0m")
                             print(f"  Expected: {expected_hash}")
                             print(f"  Actual:   {actual_hash}")
                             integrity_error_found = True
-                else:
-                    print(f"Skipping integrity validation for missing blob file {blob_file_name}.")
 
-            if missing_blob_found or integrity_error_found:
-                return False
+                if integrity_error_found:
+                    return False
+            else:
+                print("Skipping hash validation.")
 
-    print(f"All blob files in {backup_folder} are valid.")
+    print(f"\nAll validations completed for {backup_folder}.")
     return True
 
 def backup_mode():
@@ -360,8 +359,6 @@ def restore_mode():
         if user_input.startswith('"') and user_input.endswith('"'):
             user_input = user_input[1:-1]
         backup_root = user_input if user_input else os.path.join(script_dir, "ModelBakup")
-        
-        # Validate that at least one valid backup exists using the validate_and_get_valid_backups function
         try:
             backup_folders = validate_and_get_valid_backups(backup_root)
             print("Valid backup folders found:")
@@ -371,11 +368,115 @@ def restore_mode():
         except ValueError as e:
             print(f"Error: {e}")
             print("Please provide a directory with valid backup folders.")
-            
-    backup_root = user_input if user_input else os.path.join(script_dir, "ModelBakup")
+
     backup_folders = list_backups(backup_root)
-    selected_backup = get_backup_selection(backup_folders)
-    restore_backup(selected_backup)
+    selected_backup = get_backup_selection(backup_folders)    # Ask user for restore destination
+    default_ollama_path = os.getenv('OLLAMA_MODELS', '')
+    while True:
+        if default_ollama_path:
+            print(f"\nDefault restore path: \033[36m{default_ollama_path}\033[0m")
+            user_path = input("Press Enter to use default path or enter a custom path: ").strip()
+            if user_path == "":
+                if os.path.isdir(default_ollama_path):
+                    ollama_base = default_ollama_path
+                    break
+                else:
+                    print(f"\nError: Default path does not exist: {default_ollama_path}")
+                    default_ollama_path = ""  # Clear default path to ask for custom path
+                    continue
+        else:
+            print("\nNo default path available (OLLAMA_MODELS environment variable not set)")
+            user_path = input("Enter restore path: ").strip()
+
+        if user_path.startswith('"') and user_path.endswith('"'):
+            user_path = user_path[1:-1]
+            
+        if not user_path and not default_ollama_path:
+            print("Error: No path provided. Please enter a valid path.")
+            continue
+
+        if not os.path.isdir(user_path):
+            create = input("Path does not exist. Create it? (y/n): ").lower()
+            if create == 'y':
+                try:
+                    os.makedirs(user_path)
+                    ollama_base = user_path
+                    break
+                except Exception as e:
+                    print(f"Error creating directory: {e}")
+                    continue
+            continue
+        
+        ollama_base = user_path
+        break
+    
+    print(f"\nSelected restore path: \033[36m{ollama_base}\033[0m")
+    
+    # Validate blob files existence and hashes if requested
+    manifests_path = os.path.join(selected_backup, "manifests", "registry.ollama.ai", "library")
+    blobs_path = os.path.join(selected_backup, "blobs")
+
+    for root, _, files in os.walk(manifests_path):
+        for manifest_file in files:
+            manifest_file_path = os.path.join(root, manifest_file)
+            try:
+                with open(manifest_file_path, 'r') as f:
+                    manifest = json.load(f)
+            except Exception as e:
+                print(f"Error: Failed to read or parse manifest file {manifest_file_path}: {e}")
+                sys.exit(1)
+
+            digests = [manifest['config']['digest']]
+            digests.extend(layer['digest'] for layer in manifest['layers'])
+
+            # First check existence of blob files
+            print("\nChecking existence of blob files...")
+            missing_blob_found = False
+            for digest in digests:
+                blob_file_name = digest.replace(':', '-')
+                blob_file_path = os.path.join(blobs_path, blob_file_name)
+                if not os.path.isfile(blob_file_path):
+                    print(f"Error: \033[31mMissing\033[0m blob file {blob_file_name} for digest {digest}.")
+                    missing_blob_found = True
+            
+            if missing_blob_found:
+                print("Aborting restore due to missing files.")
+                sys.exit(1)
+
+            # Ask user if they want to validate hashes
+            while True:
+                check_hashes = input("\nWould you like to validate file hashes before restoring? This may take some time for large files. (y/n): ").lower()
+                if check_hashes in ['y', 'n']:
+                    break
+                print("Please enter 'y' for yes or 'n' for no.")
+
+            if check_hashes == 'y':
+                print("\nValidating integrity of blob files (hash validation)...")
+                integrity_error_found = False
+                for digest in digests:
+                    blob_file_name = digest.replace(':', '-')
+                    blob_file_path = os.path.join(blobs_path, blob_file_name)
+                    # Validate the hash of the blob file
+                    expected_hash = digest.split(':')[1]
+                    with open(blob_file_path, 'rb') as blob_file:
+                        file_content = blob_file.read()
+                        actual_hash = hashlib.sha256(file_content).hexdigest()
+                        if actual_hash == expected_hash:
+                            print(f"\033[35m{blob_file_name}\033[32m OK\033[0m")
+                        else:
+                            print(f"\033[31m{blob_file_name}\033[0m \033[31mMismatch\033[0m")
+                            print(f"  Expected: {expected_hash}")
+                            print(f"  Actual:   {actual_hash}")
+                            integrity_error_found = True
+
+                if integrity_error_found:
+                    print("Aborting restore due to hash validation failures.")
+                    sys.exit(1)
+            else:
+                print("\nSkipping hash validation.")
+
+    print("\nProceeding with restore...")
+    restore_backup(selected_backup, ollama_base)
 
 def main():
     print("\033[36mChoose operation mode:\033[0m")
