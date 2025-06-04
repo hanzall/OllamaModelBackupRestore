@@ -377,6 +377,8 @@ def backup_mode():
 
 def restore_mode():
     script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Ask user for backup directory path
     while True:
         user_input = input("Enter backup directory path (press Enter to use default ModelBakup): ").strip()
         if user_input.startswith('"') and user_input.endswith('"'):
@@ -415,7 +417,7 @@ def restore_mode():
 
         if user_path.startswith('"') and user_path.endswith('"'):
             user_path = user_path[1:-1]
-            
+
         if not user_path and not default_ollama_path:
             print("Error: No path provided. Please enter a valid path.")
             continue
@@ -431,18 +433,30 @@ def restore_mode():
                     print(f"Error creating directory: {e}")
                     continue
             continue
-        
+
         ollama_base = user_path
         break
-    
+
     print(f"\nSelected restore path: \033[36m{ollama_base}\033[0m")
-    
+
+    # Ask for hash validation once for all backups
+    while True:
+        check_hashes = input("\nWould you like to validate file hashes for all backups? This may take some time for large files. (y/n): ").lower()
+        if check_hashes in ['y', 'n']:
+            break
+        print("Please enter 'y' for yes or 'n' for no.")
+
+    valid_backups = []
+    invalid_backups = []
+
     for selected_backup in selected_backups:
         print(f"\nProcessing backup: {os.path.basename(selected_backup)}")
-        
-        # Validate blob files existence and hashes if requested
+
         manifests_path = os.path.join(selected_backup, "manifests", "registry.ollama.ai", "library")
         blobs_path = os.path.join(selected_backup, "blobs")
+
+        missing_blob_found = False
+        integrity_error_found = False
 
         for root, _, files in os.walk(manifests_path):
             for manifest_file in files:
@@ -457,34 +471,19 @@ def restore_mode():
                 digests = [manifest['config']['digest']]
                 digests.extend(layer['digest'] for layer in manifest['layers'])
 
-                # First check existence of blob files
                 print("\nChecking existence of blob files...")
-                missing_blob_found = False
                 for digest in digests:
                     blob_file_name = digest.replace(':', '-')
                     blob_file_path = os.path.join(blobs_path, blob_file_name)
                     if not os.path.isfile(blob_file_path):
                         print(f"Error: \033[31mMissing\033[0m blob file {blob_file_name} for digest {digest}.")
                         missing_blob_found = True
-                
-                if missing_blob_found:
-                    print("Skipping this backup due to missing files.")
-                    continue
 
-                # Ask user if they want to validate hashes
-                while True:
-                    check_hashes = input("\nWould you like to validate file hashes before restoring? This may take some time for large files. (y/n): ").lower()
-                    if check_hashes in ['y', 'n']:
-                        break
-                    print("Please enter 'y' for yes or 'n' for no.")
-
-                if check_hashes == 'y':
+                if check_hashes == 'y' and not missing_blob_found:
                     print("\nValidating integrity of blob files (hash validation)...")
-                    integrity_error_found = False
                     for digest in digests:
                         blob_file_name = digest.replace(':', '-')
                         blob_file_path = os.path.join(blobs_path, blob_file_name)
-                        # Validate the hash of the blob file
                         expected_hash = digest.split(':')[1]
                         with open(blob_file_path, 'rb') as blob_file:
                             file_content = blob_file.read()
@@ -497,16 +496,34 @@ def restore_mode():
                                 print(f"  Actual:   {actual_hash}")
                                 integrity_error_found = True
 
-                    if integrity_error_found:
-                        print("Skipping this backup due to hash validation failures.")
-                        continue
-                else:
-                    print("\nSkipping hash validation.")
+        if missing_blob_found or integrity_error_found:
+            invalid_backups.append(selected_backup)
+        else:
+            valid_backups.append(selected_backup)
 
-        print(f"\nRestoring backup: {os.path.basename(selected_backup)}")
-        restore_backup(selected_backup, ollama_base)
+    print("\nProcessing valid backups...")
+    for valid_backup in valid_backups:
+        print(f"\nRestoring backup: {os.path.basename(valid_backup)}")
+        restore_backup(valid_backup, ollama_base)
         print("-" * 50)
 
+    if invalid_backups:
+        print("\nThe following backups were skipped due to missing blobs or hash validation errors:")
+        for invalid_backup in invalid_backups:
+            print(f"  - {os.path.basename(invalid_backup)}")
+
+        while True:
+            restore_invalid = input("\nWould you like to attempt restoring skipped backups? (y/n) [default: n]: ").lower()
+            if restore_invalid in ['', 'n', 'y']:
+                restore_invalid = restore_invalid or 'n'  # Default to 'n' if input is empty
+                break
+            print("Please enter 'y' for yes or 'n' for no.")
+
+        if restore_invalid == 'y':
+            for invalid_backup in invalid_backups:
+                print(f"\nRestoring skipped backup: {os.path.basename(invalid_backup)}")
+                restore_backup(invalid_backup, ollama_base)
+                print("-" * 50)
 def main():
     print("\033[36mChoose operation mode:\033[0m")
     print("[1] Backup a model")
