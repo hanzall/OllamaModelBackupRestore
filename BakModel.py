@@ -274,7 +274,7 @@ def display_backup_list(backup_details):
     """Display the list of backups in a formatted table."""
     print("\nAvailable backups:")
     # print(f"{'Index':<6} {'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Structure':<10} {'Folder':<33}")
-    print(f"{'Index':<6} {'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Folder':<33}")
+    print(f"{'Index':<6} {'Model Name':<24} {'Size (MB)':<10} {'Params':<15} {'Folder':<33}")
     print("-" * 105)
 
     for idx, backup in enumerate(backup_details):
@@ -291,8 +291,8 @@ def display_backup_list(backup_details):
         if len(folder_name) > 33:
             folder_name = f"{folder_name[:15]}...{folder_name[-15:]}"
 
-        print(f"[{idx:<4}] {backup['name']:<20} {backup['size_mb']:<10.2f} "
-              f"{backup['parameters']:<20} {structure_icon:<11} {folder_name:<33}")
+        print(f"[{idx:<4}] {backup['name']:<24} {backup['size_mb']:<10.2f} "
+              f"{backup['parameters']:<15} {structure_icon:<11} {folder_name:<33}")
 
 def list_backups(backup_root):
     """List and validate all backups in the given directory."""
