@@ -177,32 +177,81 @@ def list_backups(backup_root):
         print("No backup folders found.")
         sys.exit(1)
 
+
+
+    # Calculate and display backup statistics    print("\nCalculating backup statistics...")
+    total_backups = len(backup_folders)
+    total_blobs = sum(len(os.listdir(os.path.join(folder, "blobs"))) for folder in backup_folders)
+    total_size = sum(
+        sum(os.path.getsize(os.path.join(folder, "blobs", blob)) for blob in os.listdir(os.path.join(folder, "blobs")))
+        for folder in backup_folders
+    )
+    print(f"\nTotal backups available: \033[36m{total_backups}\033[0m")
+    print(f"Total blob files across all backups: \033[36m{total_blobs}\033[0m")
+    print(f"Total size of all backups: \033[36m{total_size / (1024 ** 2):.2f} MB\033[0m")
+
     print("\033[36mValidating backup folder structure...\033[0m")
     invalid_backups = []
+    backup_details = []
+
+    # Calculate details for each backup
     for folder in backup_folders:
-        # Only validate folder structure, not contents
+        # Check folder structure
         manifests_path = os.path.join(folder, "manifests", "registry.ollama.ai", "library")
         blobs_path = os.path.join(folder, "blobs")
-        if not os.path.isdir(manifests_path) or not os.path.isdir(blobs_path):
+        structure_OK = os.path.isdir(manifests_path) and os.path.isdir(blobs_path)
+
+        if not structure_OK:
             invalid_backups.append(folder)
 
+        # Calculate size and get details
+        folder_name = os.path.basename(folder)
+        total_size = sum(
+            os.path.getsize(os.path.join(folder, "blobs", blob))
+            for blob in os.listdir(os.path.join(folder, "blobs"))
+        )
+        total_size_mb = total_size / (1024 ** 2)
+
+        # Get model info
+        parameters = "Unknown"
+        model_name = "Unknown"
+        if structure_OK:
+            for root, dirs, files in os.walk(manifests_path):
+                if "library" in root:
+                    if dirs:
+                        model_name = dirs[0]
+                        model_folder_path = os.path.join(root, model_name)
+                        model_files = os.listdir(model_folder_path)
+                        if model_files:
+                            parameters = model_files[0]
+                    break
+
+        backup_details.append({
+            "name": model_name,
+            "size_mb": total_size_mb,
+            "parameters": parameters,
+            "folder": folder,
+            "folder_name": folder_name,
+            "structure_OK": structure_OK
+        })
+
+    # Sort backups by size
+    backup_details.sort(key=lambda x: x['size_mb'], reverse=True)
+
+    # Show unified backup list with validation status
+    print("\nAvailable backups:")
+    print(f"{'Index':<6} {'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Folder':<20} {'Status':<10}")
+    print("-" * 90)
+    for idx, backup in enumerate(backup_details):
+        status = "\033[32mStructureOK\033[0m" if backup['structure_OK'] else "\033[31mNotOK\033[0m"
+        folder_style = "" if backup['structure_OK'] else "\033[31m"
+        print(f"[{idx:<4}] {backup['name']:<20} {backup['size_mb']:<10.2f} "
+              f"{backup['parameters']:<20} {folder_style}{backup['folder_name']}\033[0m{' ':<20} {status}")
+
     if invalid_backups:
-        print("\033[31mInvalid backup folders:\033[0m")
-        for invalid_folder in invalid_backups:
-            head, tail = os.path.split(invalid_folder)
-            if head:
-                print(f"  - {head}{os.path.sep}\033[31m{tail}\033[0m")
-            else:
-                print(f"  - \033[31m{tail}\033[0m")
+        print("\n\033[33mNote: Invalid backups are marked in red and may be incomplete or corrupted.\033[0m")
 
-    print("\033[36mAvailable backup folders:\033[0m")
-    for idx, folder in enumerate(sorted(backup_folders)):
-        if folder in invalid_backups:
-            print(f"[\033[31m{idx:2d}\033[0m] {os.path.basename(folder)}")
-        else:
-            print(f"[{idx:2d}] {os.path.basename(folder)}")
-
-    return sorted(backup_folders)
+    return [b['folder'] for b in backup_details]
 
 def get_backup_selection(backup_folders):
     """Get one or multiple backup selections from user."""
@@ -394,60 +443,60 @@ def restore_mode():
             print(f"Error: {e}")
             print("Please provide a directory with valid backup folders.")
 
-    # Calculate and display backup statistics
-    print("\nCalculating backup statistics...")
-    total_backups = len(backup_folders)
-    total_blobs = sum(len(os.listdir(os.path.join(folder, "blobs"))) for folder in backup_folders)
-    total_size = sum(
-        sum(os.path.getsize(os.path.join(folder, "blobs", blob)) for blob in os.listdir(os.path.join(folder, "blobs")))
-        for folder in backup_folders
-    )
-    print(f"\nTotal backups available: \033[36m{total_backups}\033[0m")
-    print(f"Total blob files across all backups: \033[36m{total_blobs}\033[0m")
-    print(f"Total size of all backups: \033[36m{total_size / (1024 ** 2):.2f} MB\033[0m")
+    # # Calculate and display backup statistics
+    # print("\nCalculating backup statistics...")
+    # total_backups = len(backup_folders)
+    # total_blobs = sum(len(os.listdir(os.path.join(folder, "blobs"))) for folder in backup_folders)
+    # total_size = sum(
+    #     sum(os.path.getsize(os.path.join(folder, "blobs", blob)) for blob in os.listdir(os.path.join(folder, "blobs")))
+    #     for folder in backup_folders
+    # )
+    # print(f"\nTotal backups available: \033[36m{total_backups}\033[0m")
+    # print(f"Total blob files across all backups: \033[36m{total_blobs}\033[0m")
+    # print(f"Total size of all backups: \033[36m{total_size / (1024 ** 2):.2f} MB\033[0m")
 
-    # Calculate and display detailed backup statistics
-    print("\nCalculating detailed backup statistics...")
-    backup_details = []
+    # # Calculate and display detailed backup statistics
+    # print("\nCalculating detailed backup statistics...")
+    # backup_details = []
 
-    for folder in backup_folders:
-        folder_name = os.path.basename(folder)
-        total_size = sum(
-            os.path.getsize(os.path.join(folder, "blobs", blob))
-            for blob in os.listdir(os.path.join(folder, "blobs"))
-        )
-        total_size_mb = total_size / (1024 ** 2)
+    # for folder in backup_folders:
+    #     folder_name = os.path.basename(folder)
+    #     total_size = sum(
+    #         os.path.getsize(os.path.join(folder, "blobs", blob))
+    #         for blob in os.listdir(os.path.join(folder, "blobs"))
+    #     )
+    #     total_size_mb = total_size / (1024 ** 2)
 
-        # Retrieve parameters and model name from manifests
-        manifests_path = os.path.join(folder, "manifests", "registry.ollama.ai", "library")
-        parameters = "Unknown"
-        model_name = "Unknown"
-        for root, dirs, files in os.walk(manifests_path):
-            if "library" in root:
-                if dirs:
-                    model_name = dirs[0]  # First folder name in "library"
-                    model_folder_path = os.path.join(root, model_name)
-                    model_files = os.listdir(model_folder_path)
-                    if model_files:
-                        parameters = model_files[0]  # First file name in the model_name folder
-                break
+    #     # Retrieve parameters and model name from manifests
+    #     manifests_path = os.path.join(folder, "manifests", "registry.ollama.ai", "library")
+    #     parameters = "Unknown"
+    #     model_name = "Unknown"
+    #     for root, dirs, files in os.walk(manifests_path):
+    #         if "library" in root:
+    #             if dirs:
+    #                 model_name = dirs[0]  # First folder name in "library"
+    #                 model_folder_path = os.path.join(root, model_name)
+    #                 model_files = os.listdir(model_folder_path)
+    #                 if model_files:
+    #                     parameters = model_files[0]  # First file name in the model_name folder
+    #             break
 
-        backup_details.append({
-            "name": model_name,
-            "size_mb": total_size_mb,
-            "parameters": parameters,
-            "folder": folder_name  # Only folder name
-        })
+    #     backup_details.append({
+    #         "name": model_name,
+    #         "size_mb": total_size_mb,
+    #         "parameters": parameters,
+    #         "folder": folder_name  # Only folder name
+    #     })
 
-    # Sort backups by size
-    backup_details.sort(key=lambda x: x['size_mb'], reverse=True)
+    # # Sort backups by size
+    # backup_details.sort(key=lambda x: x['size_mb'], reverse=True)
 
-    # Display backups in table format
-    print("\nAvailable backups:")
-    print(f"{'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Folder':<20}")
-    print("-" * 70)
-    for backup in backup_details:
-        print(f"{backup['name']:<20} {backup['size_mb']:<10.2f} {backup['parameters']:<20} {backup['folder']:<20}")
+    # # Display backups in table format
+    # print("\nAvailable backups:")
+    # print(f"{'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Folder':<20}")
+    # print("-" * 70)
+    # for backup in backup_details:
+    #     print(f"{backup['name']:<20} {backup['size_mb']:<10.2f} {backup['parameters']:<20} {backup['folder']:<20}")
 
     backup_folders = list_backups(backup_root)
     selected_backups = get_backup_selection(backup_folders)
