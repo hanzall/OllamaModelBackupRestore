@@ -394,6 +394,61 @@ def restore_mode():
             print(f"Error: {e}")
             print("Please provide a directory with valid backup folders.")
 
+    # Calculate and display backup statistics
+    print("\nCalculating backup statistics...")
+    total_backups = len(backup_folders)
+    total_blobs = sum(len(os.listdir(os.path.join(folder, "blobs"))) for folder in backup_folders)
+    total_size = sum(
+        sum(os.path.getsize(os.path.join(folder, "blobs", blob)) for blob in os.listdir(os.path.join(folder, "blobs")))
+        for folder in backup_folders
+    )
+    print(f"\nTotal backups available: \033[36m{total_backups}\033[0m")
+    print(f"Total blob files across all backups: \033[36m{total_blobs}\033[0m")
+    print(f"Total size of all backups: \033[36m{total_size / (1024 ** 2):.2f} MB\033[0m")
+
+    # Calculate and display detailed backup statistics
+    print("\nCalculating detailed backup statistics...")
+    backup_details = []
+
+    for folder in backup_folders:
+        folder_name = os.path.basename(folder)
+        total_size = sum(
+            os.path.getsize(os.path.join(folder, "blobs", blob))
+            for blob in os.listdir(os.path.join(folder, "blobs"))
+        )
+        total_size_mb = total_size / (1024 ** 2)
+
+        # Retrieve parameters and model name from manifests
+        manifests_path = os.path.join(folder, "manifests", "registry.ollama.ai", "library")
+        parameters = "Unknown"
+        model_name = "Unknown"
+        for root, dirs, files in os.walk(manifests_path):
+            if "library" in root:
+                if dirs:
+                    model_name = dirs[0]  # First folder name in "library"
+                    model_folder_path = os.path.join(root, model_name)
+                    model_files = os.listdir(model_folder_path)
+                    if model_files:
+                        parameters = model_files[0]  # First file name in the model_name folder
+                break
+
+        backup_details.append({
+            "name": model_name,
+            "size_mb": total_size_mb,
+            "parameters": parameters,
+            "folder": folder_name  # Only folder name
+        })
+
+    # Sort backups by size
+    backup_details.sort(key=lambda x: x['size_mb'], reverse=True)
+
+    # Display backups in table format
+    print("\nAvailable backups:")
+    print(f"{'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Folder':<20}")
+    print("-" * 70)
+    for backup in backup_details:
+        print(f"{backup['name']:<20} {backup['size_mb']:<10.2f} {backup['parameters']:<20} {backup['folder']:<20}")
+
     backup_folders = list_backups(backup_root)
     selected_backups = get_backup_selection(backup_folders)
 
@@ -512,14 +567,23 @@ def restore_mode():
         for invalid_backup in invalid_backups:
             print(f"  - {os.path.basename(invalid_backup)}")
 
+        # Separate question for missing blobs
         while True:
-            restore_invalid = input("\nWould you like to attempt restoring skipped backups? (y/n) [default: n]: ").lower()
-            if restore_invalid in ['', 'n', 'y']:
-                restore_invalid = restore_invalid or 'n'  # Default to 'n' if input is empty
+            restore_missing_blobs = input("\nWould you like to attempt restoring backups with missing blobs? (y/n) [default: n]: ").lower()
+            if restore_missing_blobs in ['', 'n', 'y']:
+                restore_missing_blobs = restore_missing_blobs or 'n'  # Default to 'n' if input is empty
                 break
             print("Please enter 'y' for yes or 'n' for no.")
 
-        if restore_invalid == 'y':
+        # Separate question for hash mismatches
+        while True:
+            restore_hash_mismatches = input("\nWould you like to attempt restoring backups with hash mismatches? (y/n) [default: n]: ").lower()
+            if restore_hash_mismatches in ['', 'n', 'y']:
+                restore_hash_mismatches = restore_hash_mismatches or 'n'  # Default to 'n' if input is empty
+                break
+            print("Please enter 'y' for yes or 'n' for no.")
+
+        if restore_missing_blobs == 'y' or restore_hash_mismatches == 'y':
             for invalid_backup in invalid_backups:
                 print(f"\nRestoring skipped backup: {os.path.basename(invalid_backup)}")
                 restore_backup(invalid_backup, ollama_base)
