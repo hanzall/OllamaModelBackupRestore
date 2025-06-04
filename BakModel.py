@@ -259,7 +259,8 @@ def analyze_backup_folder(folder):
         "folder": folder,
         "folder_name": folder_name,
         "structure_OK": structure_OK,
-        "have_missing_blob": have_missing_blob
+        "have_missing_blob": have_missing_blob,
+        "is_problematic": not structure_OK or have_missing_blob
     }
 
 def display_backup_statistics(total_backups, total_blobs, total_size):
@@ -272,18 +273,26 @@ def display_backup_statistics(total_backups, total_blobs, total_size):
 def display_backup_list(backup_details):
     """Display the list of backups in a formatted table."""
     print("\nAvailable backups:")
-    print(f"{'Index':<6} {'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Folder':<20} {'Status':<25}")
+    # print(f"{'Index':<6} {'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Structure':<10} {'Folder':<33}")
+    print(f"{'Index':<6} {'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Folder':<33}")
     print("-" * 105)
+
     for idx, backup in enumerate(backup_details):
+        # Determine structure status icon
         if not backup['structure_OK']:
-            status = "\033[31mStructure Invalid\033[0m"
+            structure_icon = "\033[31m✗\033[0m"  # Red cross for invalid structure
         elif backup['have_missing_blob']:
-            status = "\033[33mMissing Blobs\033[0m"
+            structure_icon = "\033[33m⚠\033[0m"  # Yellow warning for missing blobs
         else:
-            status = "\033[32mOK\033[0m"
-        folder_style = "\033[31m" if not backup['structure_OK'] else "\033[33m" if backup['have_missing_blob'] else ""
+            structure_icon = "\033[32m✔\033[0m"  # Green check for OK
+
+        # Truncate folder name if too long
+        folder_name = backup['folder_name']
+        if len(folder_name) > 33:
+            folder_name = f"{folder_name[:15]}...{folder_name[-15:]}"
+
         print(f"[{idx:<4}] {backup['name']:<20} {backup['size_mb']:<10.2f} "
-              f"{backup['parameters']:<20} {folder_style}{backup['folder_name']}\033[0m{' ':<20} {status}")
+              f"{backup['parameters']:<20} {structure_icon:<11} {folder_name:<33}")
 
 def list_backups(backup_root):
     """List and validate all backups in the given directory."""
@@ -318,6 +327,8 @@ def list_backups(backup_root):
 
     if invalid_backups:
         print("\n\033[33mNote: Invalid backups are marked in red and may be incomplete or corrupted.\033[0m")
+
+    print("\nNote: Only structure is checked; hashes are not validated yet.")
 
     return [b['folder'] for b in backup_details]
 
@@ -502,6 +513,14 @@ def restore_mode():
             print("Valid backup folders found:")
             for folder in backup_folders:
                 print(f"  - {folder}")
+
+            # Display problematic folders
+            invalid_folders = [folder for folder in backup_folders if analyze_backup_folder(folder)['is_problematic']]
+            if invalid_folders:
+                print("\nProblematic folders detected:")
+                for folder in invalid_folders:
+                    print(f"  - {folder}")
+
             break
         except ValueError as e:
             print(f"Error: {e}")
