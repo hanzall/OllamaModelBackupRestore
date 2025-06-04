@@ -304,24 +304,39 @@ def validate_backup_folder_contents(backup_folder):
 
             digests = [manifest['config']['digest']]
             digests.extend(layer['digest'] for layer in manifest['layers'])
-
+            # Check existence of blob files
+            print("Checking existence of blob files...")
+            missing_blob_found = False
             for digest in digests:
                 blob_file_name = digest.replace(':', '-')
                 blob_file_path = os.path.join(blobs_path, blob_file_name)
                 if not os.path.isfile(blob_file_path):
-                    print(f"Error: Missing blob file {blob_file_name} for digest {digest} in {backup_folder}.")
-                    return False
+                    print(f"Error: \033[31mMissing\033[0m blob file {blob_file_name} for digest {digest} in {backup_folder}.")
+                    missing_blob_found = True
+            # Validate integrity of blob files (hash validation)
+            print("Validating integrity of blob files (hash validation)...")
+            integrity_error_found = False
+            for digest in digests:
+                blob_file_name = digest.replace(':', '-')
+                blob_file_path = os.path.join(blobs_path, blob_file_name)
+                if os.path.isfile(blob_file_path):
+                    # Validate the hash of the blob file
+                    expected_hash = digest.split(':')[1]
+                    with open(blob_file_path, 'rb') as blob_file:
+                        file_content = blob_file.read()
+                        actual_hash = hashlib.sha256(file_content).hexdigest()
+                        # print(f"Computed hash for {blob_file_name}: {actual_hash}")
+                        print(f"\033[35m{blob_file_name}\033[32m OK\033[0m")
+                        if actual_hash != expected_hash:
+                            print(f"\033[31m{blob_file_name}\033[0m \033[38;5;208mMismatch\033[0m \033[35m(@{os.path.basename(backup_folder)})\033[0m")
+                            print(f"  Expected: {expected_hash}")
+                            print(f"  Actual:   {actual_hash}")
+                            integrity_error_found = True
+                else:
+                    print(f"Skipping integrity validation for missing blob file {blob_file_name}.")
 
-                # Validate the hash of the blob file
-                expected_hash = digest.split(':')[1]
-                with open(blob_file_path, 'rb') as blob_file:
-                    file_content = blob_file.read()
-                    actual_hash = hashlib.sha256(file_content).hexdigest()
-                    if actual_hash != expected_hash:
-                        print(f"Error: Hash mismatch for blob file {blob_file_name} in {backup_folder}.")
-                        print(f"  Expected: {expected_hash}")
-                        print(f"  Actual:   {actual_hash}")
-                        return False
+            if missing_blob_found or integrity_error_found:
+                return False
 
     print(f"All blob files in {backup_folder} are valid.")
     return True
