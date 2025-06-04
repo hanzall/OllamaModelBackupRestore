@@ -7,6 +7,27 @@ import sys
 import re
 import hashlib
 
+def get_manifest_path(backup_dir, model_name=None):
+    """Get the path to the manifest file or directory."""
+    base_path = os.path.join(backup_dir, "manifests", "registry.ollama.ai", "library")
+    if model_name:
+        return os.path.join(base_path, model_name.replace(':', os.path.sep))
+    return base_path
+
+def get_blobs_path(backup_dir):
+    """Get the path to the blobs directory."""
+    return os.path.join(backup_dir, "blobs")
+
+def get_backup_dir(model_name, script_dir=None):
+    """Get the backup directory path for a model."""
+    if not script_dir:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(script_dir, "ModelBakup", f"{model_name.replace(':', '-')}__{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+
+def get_blob_file_path(blobs_dir, digest):
+    """Get the path to a blob file from its digest."""
+    return os.path.join(blobs_dir, digest.replace(':', '-'))
+
 def get_ollama_models():
     try:
         result = subprocess.run(['ollama', 'list'], capture_output=True, text=True)
@@ -113,24 +134,18 @@ def get_user_selection(models):
     return indices
 
 def backup_model(model_name, max_name_length):
+    """Backup a model to a new directory."""
     ollama_base = os.getenv('OLLAMA_MODELS')
     if not ollama_base:
         print("Error: OLLAMA_MODELS environment variable not set")
         sys.exit(1)
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    backup_dir = os.path.join(
-        script_dir, 
-        "ModelBakup", 
-        f"{model_name.replace(':', '-')}__{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    )
+    backup_dir = get_backup_dir(model_name)
 
-    source_manifest_file = os.path.join(ollama_base, "manifests", "registry.ollama.ai", "library", 
-                                          model_name.replace(':', os.path.sep))
-    manifest_dir = os.path.join(backup_dir, "manifests", "registry.ollama.ai", "library", 
-                                model_name.split(':')[0])
-    dest_manifest_file = os.path.join(backup_dir, "manifests", "registry.ollama.ai", "library", 
-                                     model_name.replace(':', os.path.sep))
+    # Handle manifest files
+    source_manifest_file = get_manifest_path(ollama_base, model_name)
+    manifest_dir = get_manifest_path(backup_dir, model_name.split(':')[0])
+    dest_manifest_file = get_manifest_path(backup_dir, model_name)
 
     print("Copying manifest structure...")
     os.makedirs(manifest_dir, exist_ok=True)
@@ -146,15 +161,16 @@ def backup_model(model_name, max_name_length):
         print(f"Error: Failed to parse manifest.json: {str(e)}")
         sys.exit(1)
 
+    # Handle blob files
     digests = [manifest['config']['digest']]
     digests.extend(layer['digest'] for layer in manifest['layers'])
 
     print("Copying blobs...")
-    blobs_dir = os.path.join(backup_dir, "blobs")
+    blobs_dir = get_blobs_path(backup_dir)
     os.makedirs(blobs_dir, exist_ok=True)
     for digest in digests:
-        source_file = os.path.join(ollama_base, "blobs", digest.replace(':', '-'))
-        dest_file = os.path.join(blobs_dir, digest.replace(':', '-'))
+        source_file = get_blob_file_path(get_blobs_path(ollama_base), digest)
+        dest_file = get_blob_file_path(blobs_dir, digest)
         if os.path.exists(source_file):
             try:
                 shutil.copy2(source_file, dest_file)
@@ -168,7 +184,109 @@ def backup_model(model_name, max_name_length):
     print(f"\033[36m {backup_dir}\033[0m")
     print(f"\033[35mTo restore: Run restore mode and select the backup folder.\033[0m")
 
+def calculate_backup_statistics(backup_folders):
+    """Calculate and return statistics about backup folders."""
+    total_backups = len(backup_folders)
+    total_blobs = sum(len(os.listdir(os.path.join(folder, "blobs"))) for folder in backup_folders)
+    total_size = sum(
+        sum(os.path.getsize(os.path.join(folder, "blobs", blob)) for blob in os.listdir(os.path.join(folder, "blobs")))
+        for folder in backup_folders
+    )
+    return total_backups, total_blobs, total_size
+
+def get_model_info_from_manifest(manifests_path):
+    """Extract model name and parameters from manifest directory."""
+    parameters = "Unknown"
+    model_name = "Unknown"
+    for root, dirs, files in os.walk(manifests_path):
+        if "library" in root:
+            if dirs:
+                model_name = dirs[0]
+                model_folder_path = os.path.join(root, model_name)
+                model_files = os.listdir(model_folder_path)
+                if model_files:
+                    parameters = model_files[0]
+            break
+    return model_name, parameters
+
+def analyze_backup_folder(folder):
+    """Analyze a single backup folder and return its details."""
+    manifests_path = os.path.join(folder, "manifests", "registry.ollama.ai", "library")
+    blobs_path = os.path.join(folder, "blobs")
+    structure_OK = os.path.isdir(manifests_path) and os.path.isdir(blobs_path)
+
+    folder_name = os.path.basename(folder)
+    total_size = sum(
+        os.path.getsize(os.path.join(folder, "blobs", blob))
+        for blob in os.listdir(os.path.join(folder, "blobs"))
+    )
+    total_size_mb = total_size / (1024 ** 2)
+
+    model_name, parameters = ("Unknown", "Unknown")
+    have_missing_blob = False
+
+    if structure_OK:
+        model_name, parameters = get_model_info_from_manifest(manifests_path)
+        
+        # Check for missing blobs by examining manifest files
+        for root, _, files in os.walk(manifests_path):
+            for manifest_file in files:
+                manifest_file_path = os.path.join(root, manifest_file)
+                try:
+                    with open(manifest_file_path, 'r') as f:
+                        manifest = json.load(f)
+                    # Get all required digests from manifest
+                    digests = [manifest['config']['digest']]
+                    digests.extend(layer['digest'] for layer in manifest['layers'])
+                    
+                    # Check each blob file
+                    for digest in digests:
+                        blob_file_name = digest.replace(':', '-')
+                        blob_file_path = os.path.join(blobs_path, blob_file_name)
+                        if not os.path.isfile(blob_file_path):
+                            have_missing_blob = True
+                            break
+                    if have_missing_blob:
+                        break
+                except Exception:
+                    have_missing_blob = True
+                    break
+
+    return {
+        "name": model_name,
+        "size_mb": total_size_mb,
+        "parameters": parameters,
+        "folder": folder,
+        "folder_name": folder_name,
+        "structure_OK": structure_OK,
+        "have_missing_blob": have_missing_blob
+    }
+
+def display_backup_statistics(total_backups, total_blobs, total_size):
+    """Display backup statistics in a formatted way."""
+    print("\nCalculating backup statistics...")
+    print(f"\nTotal backups available: \033[36m{total_backups}\033[0m")
+    print(f"Total blob files across all backups: \033[36m{total_blobs}\033[0m")
+    print(f"Total size of all backups: \033[36m{total_size / (1024 ** 2):.2f} MB\033[0m")
+
+def display_backup_list(backup_details):
+    """Display the list of backups in a formatted table."""
+    print("\nAvailable backups:")
+    print(f"{'Index':<6} {'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Folder':<20} {'Status':<25}")
+    print("-" * 105)
+    for idx, backup in enumerate(backup_details):
+        if not backup['structure_OK']:
+            status = "\033[31mStructure Invalid\033[0m"
+        elif backup['have_missing_blob']:
+            status = "\033[33mMissing Blobs\033[0m"
+        else:
+            status = "\033[32mOK\033[0m"
+        folder_style = "\033[31m" if not backup['structure_OK'] else "\033[33m" if backup['have_missing_blob'] else ""
+        print(f"[{idx:<4}] {backup['name']:<20} {backup['size_mb']:<10.2f} "
+              f"{backup['parameters']:<20} {folder_style}{backup['folder_name']}\033[0m{' ':<20} {status}")
+
 def list_backups(backup_root):
+    """List and validate all backups in the given directory."""
     if not os.path.isdir(backup_root):
         print(f"Backup directory {backup_root} does not exist.")
         sys.exit(1)
@@ -177,76 +295,26 @@ def list_backups(backup_root):
         print("No backup folders found.")
         sys.exit(1)
 
-
-
-    # Calculate and display backup statistics    print("\nCalculating backup statistics...")
-    total_backups = len(backup_folders)
-    total_blobs = sum(len(os.listdir(os.path.join(folder, "blobs"))) for folder in backup_folders)
-    total_size = sum(
-        sum(os.path.getsize(os.path.join(folder, "blobs", blob)) for blob in os.listdir(os.path.join(folder, "blobs")))
-        for folder in backup_folders
-    )
-    print(f"\nTotal backups available: \033[36m{total_backups}\033[0m")
-    print(f"Total blob files across all backups: \033[36m{total_blobs}\033[0m")
-    print(f"Total size of all backups: \033[36m{total_size / (1024 ** 2):.2f} MB\033[0m")
+    # Calculate statistics
+    total_backups, total_blobs, total_size = calculate_backup_statistics(backup_folders)
+    display_backup_statistics(total_backups, total_blobs, total_size)
 
     print("\033[36mValidating backup folder structure...\033[0m")
     invalid_backups = []
     backup_details = []
 
-    # Calculate details for each backup
+    # Analyze each backup folder
     for folder in backup_folders:
-        # Check folder structure
-        manifests_path = os.path.join(folder, "manifests", "registry.ollama.ai", "library")
-        blobs_path = os.path.join(folder, "blobs")
-        structure_OK = os.path.isdir(manifests_path) and os.path.isdir(blobs_path)
-
-        if not structure_OK:
+        details = analyze_backup_folder(folder)
+        backup_details.append(details)
+        if not details['structure_OK']:
             invalid_backups.append(folder)
-
-        # Calculate size and get details
-        folder_name = os.path.basename(folder)
-        total_size = sum(
-            os.path.getsize(os.path.join(folder, "blobs", blob))
-            for blob in os.listdir(os.path.join(folder, "blobs"))
-        )
-        total_size_mb = total_size / (1024 ** 2)
-
-        # Get model info
-        parameters = "Unknown"
-        model_name = "Unknown"
-        if structure_OK:
-            for root, dirs, files in os.walk(manifests_path):
-                if "library" in root:
-                    if dirs:
-                        model_name = dirs[0]
-                        model_folder_path = os.path.join(root, model_name)
-                        model_files = os.listdir(model_folder_path)
-                        if model_files:
-                            parameters = model_files[0]
-                    break
-
-        backup_details.append({
-            "name": model_name,
-            "size_mb": total_size_mb,
-            "parameters": parameters,
-            "folder": folder,
-            "folder_name": folder_name,
-            "structure_OK": structure_OK
-        })
 
     # Sort backups by size
     backup_details.sort(key=lambda x: x['size_mb'], reverse=True)
 
-    # Show unified backup list with validation status
-    print("\nAvailable backups:")
-    print(f"{'Index':<6} {'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Folder':<20} {'Status':<10}")
-    print("-" * 90)
-    for idx, backup in enumerate(backup_details):
-        status = "\033[32mStructureOK\033[0m" if backup['structure_OK'] else "\033[31mNotOK\033[0m"
-        folder_style = "" if backup['structure_OK'] else "\033[31m"
-        print(f"[{idx:<4}] {backup['name']:<20} {backup['size_mb']:<10.2f} "
-              f"{backup['parameters']:<20} {folder_style}{backup['folder_name']}\033[0m{' ':<20} {status}")
+    # Display results
+    display_backup_list(backup_details)
 
     if invalid_backups:
         print("\n\033[33mNote: Invalid backups are marked in red and may be incomplete or corrupted.\033[0m")
@@ -331,13 +399,14 @@ def validate_and_get_valid_backups(backup_root):
 
     return valid_backups
 
-def validate_backup_folder_contents(backup_folder):
+def validate_backup_folder_contents(backup_folder, validate_hashes=False):
     """
     Validate if the blob files in the backup folder exist and optionally check their hashes
     against the manifest file.
 
     Args:
         backup_folder (str): The path to the backup folder to validate.
+        validate_hashes (bool): Whether to validate file hashes.
 
     Returns:
         bool: True if validation passes, False otherwise.
@@ -375,14 +444,8 @@ def validate_backup_folder_contents(backup_folder):
             if missing_blob_found:
                 return False
 
-            # Ask user if they want to validate hashes
-            while True:
-                check_hashes = input("\nWould you like to validate file hashes? This may take some time for large files. (y/n): ").lower()
-                if check_hashes in ['y', 'n']:
-                    break
-                print("Please enter 'y' for yes or 'n' for no.")
-
-            if check_hashes == 'y':
+            # Check hashes if validation is requested
+            if validate_hashes:
                 print("\nValidating integrity of blob files (hash validation)...")
                 integrity_error_found = False
                 for digest in digests:
@@ -425,6 +488,7 @@ def backup_mode():
         print("\n" + "="*50 + "\n")
 
 def restore_mode():
+    """Restore models from backup folders."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     # Ask user for backup directory path
@@ -442,61 +506,6 @@ def restore_mode():
         except ValueError as e:
             print(f"Error: {e}")
             print("Please provide a directory with valid backup folders.")
-
-    # # Calculate and display backup statistics
-    # print("\nCalculating backup statistics...")
-    # total_backups = len(backup_folders)
-    # total_blobs = sum(len(os.listdir(os.path.join(folder, "blobs"))) for folder in backup_folders)
-    # total_size = sum(
-    #     sum(os.path.getsize(os.path.join(folder, "blobs", blob)) for blob in os.listdir(os.path.join(folder, "blobs")))
-    #     for folder in backup_folders
-    # )
-    # print(f"\nTotal backups available: \033[36m{total_backups}\033[0m")
-    # print(f"Total blob files across all backups: \033[36m{total_blobs}\033[0m")
-    # print(f"Total size of all backups: \033[36m{total_size / (1024 ** 2):.2f} MB\033[0m")
-
-    # # Calculate and display detailed backup statistics
-    # print("\nCalculating detailed backup statistics...")
-    # backup_details = []
-
-    # for folder in backup_folders:
-    #     folder_name = os.path.basename(folder)
-    #     total_size = sum(
-    #         os.path.getsize(os.path.join(folder, "blobs", blob))
-    #         for blob in os.listdir(os.path.join(folder, "blobs"))
-    #     )
-    #     total_size_mb = total_size / (1024 ** 2)
-
-    #     # Retrieve parameters and model name from manifests
-    #     manifests_path = os.path.join(folder, "manifests", "registry.ollama.ai", "library")
-    #     parameters = "Unknown"
-    #     model_name = "Unknown"
-    #     for root, dirs, files in os.walk(manifests_path):
-    #         if "library" in root:
-    #             if dirs:
-    #                 model_name = dirs[0]  # First folder name in "library"
-    #                 model_folder_path = os.path.join(root, model_name)
-    #                 model_files = os.listdir(model_folder_path)
-    #                 if model_files:
-    #                     parameters = model_files[0]  # First file name in the model_name folder
-    #             break
-
-    #     backup_details.append({
-    #         "name": model_name,
-    #         "size_mb": total_size_mb,
-    #         "parameters": parameters,
-    #         "folder": folder_name  # Only folder name
-    #     })
-
-    # # Sort backups by size
-    # backup_details.sort(key=lambda x: x['size_mb'], reverse=True)
-
-    # # Display backups in table format
-    # print("\nAvailable backups:")
-    # print(f"{'Model Name':<20} {'Size (MB)':<10} {'Params':<20} {'Folder':<20}")
-    # print("-" * 70)
-    # for backup in backup_details:
-    #     print(f"{backup['name']:<20} {backup['size_mb']:<10.2f} {backup['parameters']:<20} {backup['folder']:<20}")
 
     backup_folders = list_backups(backup_root)
     selected_backups = get_backup_selection(backup_folders)
@@ -541,8 +550,6 @@ def restore_mode():
         ollama_base = user_path
         break
 
-    print(f"\nSelected restore path: \033[36m{ollama_base}\033[0m")
-
     # Ask for hash validation once for all backups
     while True:
         check_hashes = input("\nWould you like to validate file hashes for all backups? This may take some time for large files. (y/n): ").lower()
@@ -552,87 +559,37 @@ def restore_mode():
 
     valid_backups = []
     invalid_backups = []
-
+    
     for selected_backup in selected_backups:
         print(f"\nProcessing backup: {os.path.basename(selected_backup)}")
-
-        manifests_path = os.path.join(selected_backup, "manifests", "registry.ollama.ai", "library")
-        blobs_path = os.path.join(selected_backup, "blobs")
-
-        missing_blob_found = False
-        integrity_error_found = False
-
-        for root, _, files in os.walk(manifests_path):
-            for manifest_file in files:
-                manifest_file_path = os.path.join(root, manifest_file)
-                try:
-                    with open(manifest_file_path, 'r') as f:
-                        manifest = json.load(f)
-                except Exception as e:
-                    print(f"Error: Failed to read or parse manifest file {manifest_file_path}: {e}")
-                    continue
-
-                digests = [manifest['config']['digest']]
-                digests.extend(layer['digest'] for layer in manifest['layers'])
-
-                print("\nChecking existence of blob files...")
-                for digest in digests:
-                    blob_file_name = digest.replace(':', '-')
-                    blob_file_path = os.path.join(blobs_path, blob_file_name)
-                    if not os.path.isfile(blob_file_path):
-                        print(f"Error: \033[31mMissing\033[0m blob file {blob_file_name} for digest {digest}.")
-                        missing_blob_found = True
-
-                if check_hashes == 'y' and not missing_blob_found:
-                    print("\nValidating integrity of blob files (hash validation)...")
-                    for digest in digests:
-                        blob_file_name = digest.replace(':', '-')
-                        blob_file_path = os.path.join(blobs_path, blob_file_name)
-                        expected_hash = digest.split(':')[1]
-                        with open(blob_file_path, 'rb') as blob_file:
-                            file_content = blob_file.read()
-                            actual_hash = hashlib.sha256(file_content).hexdigest()
-                            if actual_hash == expected_hash:
-                                print(f"\033[35m{blob_file_name}\033[32m OK\033[0m")
-                            else:
-                                print(f"\033[31m{blob_file_name}\033[0m \033[31mMismatch\033[0m")
-                                print(f"  Expected: {expected_hash}")
-                                print(f"  Actual:   {actual_hash}")
-                                integrity_error_found = True
-
-        if missing_blob_found or integrity_error_found:
-            invalid_backups.append(selected_backup)
-        else:
+        is_valid = validate_backup_folder_contents(selected_backup, check_hashes == 'y')
+        if is_valid:
             valid_backups.append(selected_backup)
+        else:
+            invalid_backups.append(selected_backup)
 
+    # Process valid backups
     print("\nProcessing valid backups...")
     for valid_backup in valid_backups:
         print(f"\nRestoring backup: {os.path.basename(valid_backup)}")
         restore_backup(valid_backup, ollama_base)
         print("-" * 50)
 
+    # Handle invalid backups
     if invalid_backups:
-        print("\nThe following backups were skipped due to missing blobs or hash validation errors:")
+        print("\nThe following backups were skipped due to validation errors:")
         for invalid_backup in invalid_backups:
             print(f"  - {os.path.basename(invalid_backup)}")
 
-        # Separate question for missing blobs
+        # Ask about restoring invalid backups
         while True:
-            restore_missing_blobs = input("\nWould you like to attempt restoring backups with missing blobs? (y/n) [default: n]: ").lower()
-            if restore_missing_blobs in ['', 'n', 'y']:
-                restore_missing_blobs = restore_missing_blobs or 'n'  # Default to 'n' if input is empty
+            restore_invalid = input("\nWould you like to attempt restoring invalid backups? (y/n) [default: n]: ").lower()
+            if restore_invalid in ['', 'n', 'y']:
+                restore_invalid = restore_invalid or 'n'  # Default to 'n' if input is empty
                 break
             print("Please enter 'y' for yes or 'n' for no.")
 
-        # Separate question for hash mismatches
-        while True:
-            restore_hash_mismatches = input("\nWould you like to attempt restoring backups with hash mismatches? (y/n) [default: n]: ").lower()
-            if restore_hash_mismatches in ['', 'n', 'y']:
-                restore_hash_mismatches = restore_hash_mismatches or 'n'  # Default to 'n' if input is empty
-                break
-            print("Please enter 'y' for yes or 'n' for no.")
-
-        if restore_missing_blobs == 'y' or restore_hash_mismatches == 'y':
+        if restore_invalid == 'y':
             for invalid_backup in invalid_backups:
                 print(f"\nRestoring skipped backup: {os.path.basename(invalid_backup)}")
                 restore_backup(invalid_backup, ollama_base)
