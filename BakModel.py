@@ -72,19 +72,45 @@ def display_models(models):
     print("\033[31m[ q ] Quit\033[0m")
     return padding['name']
 
-def get_user_selection(models):
+def get_multiple_selections(total_count, prompt):
+    """
+    Get multiple selections from user input.
+    Args:
+        total_count (int): Total number of items to select from
+        prompt (str): The prompt to show to user
+    Returns:
+        list: List of selected indices
+    """
     while True:
-        selection = input(f"\nSelect model number (0-{len(models)-1}) or 'q' to quit: ")
-        if selection.lower() == 'q':
+        print("\nEnter numbers separated by commas (e.g., 1,3,5)")
+        print("Enter 'a' to select all")
+        print("Enter 'q' to quit")
+        selection = input(prompt).strip().lower()
+        
+        if selection == 'q':
             print("\033[32mExiting script.\033[0m")
             sys.exit(0)
+        elif selection == 'a':
+            return list(range(total_count))
+            
         try:
-            idx = int(selection)
-            if 0 <= idx < len(models):
-                return idx
+            # Split by comma and convert to integers
+            indices = [int(x.strip()) for x in selection.split(',')]
+            # Validate all indices
+            if all(0 <= idx < total_count for idx in indices):
+                return sorted(set(indices))  # Remove duplicates and sort
+            else:
+                print(f"Invalid selection. Please enter numbers between 0 and {total_count-1}")
         except ValueError:
-            pass
-        print("Invalid selection. Please try again.")
+            print("Invalid input. Please enter numbers separated by commas, 'a' for all, or 'q' to quit")
+
+def get_user_selection(models):
+    """Get one or multiple model selections from user."""
+    indices = get_multiple_selections(
+        len(models),
+        f"\nSelect model number(s) (0-{len(models)-1}): "
+    )
+    return indices
 
 def backup_model(model_name, max_name_length):
     ollama_base = os.getenv('OLLAMA_MODELS')
@@ -179,18 +205,12 @@ def list_backups(backup_root):
     return sorted(backup_folders)
 
 def get_backup_selection(backup_folders):
-    while True:
-        selection = input(f"\nSelect backup number (0-{len(backup_folders)-1}) or 'q' to quit: ")
-        if selection.lower() == 'q':
-            print("\033[32mExiting script.\033[0m")
-            sys.exit(0)
-        try:
-            idx = int(selection)
-            if 0 <= idx < len(backup_folders):
-                return backup_folders[idx]
-        except ValueError:
-            pass
-        print("Invalid selection. Please try again.")
+    """Get one or multiple backup selections from user."""
+    indices = get_multiple_selections(
+        len(backup_folders),
+        f"\nSelect backup number(s) (0-{len(backup_folders)-1}): "
+    )
+    return [backup_folders[i] for i in indices]
 
 def restore_backup(backup_dir, ollama_base):
     if not ollama_base:
@@ -346,11 +366,14 @@ def backup_mode():
         print("Error: No models found. Please ensure Ollama is running and models are installed.")
         sys.exit(1)
     max_name_length = display_models(models)
-    selection = get_user_selection(models)
-    model_name = models[selection]['Name']
-    print(f"Selected model: \033[32m{model_name:<{max_name_length}}\033[0m \t"
-          f"\033[33m(Size: {models[selection]['Size']})\033[0m")
-    backup_model(model_name, max_name_length)
+    selections = get_user_selection(models)
+    
+    for selection in selections:
+        model_name = models[selection]['Name']
+        print(f"\nProcessing: \033[32m{model_name:<{max_name_length}}\033[0m \t"
+              f"\033[33m(Size: {models[selection]['Size']})\033[0m")
+        backup_model(model_name, max_name_length)
+        print("\n" + "="*50 + "\n")
 
 def restore_mode():
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -370,7 +393,9 @@ def restore_mode():
             print("Please provide a directory with valid backup folders.")
 
     backup_folders = list_backups(backup_root)
-    selected_backup = get_backup_selection(backup_folders)    # Ask user for restore destination
+    selected_backups = get_backup_selection(backup_folders)
+
+    # Ask user for restore destination
     default_ollama_path = os.getenv('OLLAMA_MODELS', '')
     while True:
         if default_ollama_path:
@@ -412,71 +437,75 @@ def restore_mode():
     
     print(f"\nSelected restore path: \033[36m{ollama_base}\033[0m")
     
-    # Validate blob files existence and hashes if requested
-    manifests_path = os.path.join(selected_backup, "manifests", "registry.ollama.ai", "library")
-    blobs_path = os.path.join(selected_backup, "blobs")
+    for selected_backup in selected_backups:
+        print(f"\nProcessing backup: {os.path.basename(selected_backup)}")
+        
+        # Validate blob files existence and hashes if requested
+        manifests_path = os.path.join(selected_backup, "manifests", "registry.ollama.ai", "library")
+        blobs_path = os.path.join(selected_backup, "blobs")
 
-    for root, _, files in os.walk(manifests_path):
-        for manifest_file in files:
-            manifest_file_path = os.path.join(root, manifest_file)
-            try:
-                with open(manifest_file_path, 'r') as f:
-                    manifest = json.load(f)
-            except Exception as e:
-                print(f"Error: Failed to read or parse manifest file {manifest_file_path}: {e}")
-                sys.exit(1)
+        for root, _, files in os.walk(manifests_path):
+            for manifest_file in files:
+                manifest_file_path = os.path.join(root, manifest_file)
+                try:
+                    with open(manifest_file_path, 'r') as f:
+                        manifest = json.load(f)
+                except Exception as e:
+                    print(f"Error: Failed to read or parse manifest file {manifest_file_path}: {e}")
+                    continue
 
-            digests = [manifest['config']['digest']]
-            digests.extend(layer['digest'] for layer in manifest['layers'])
+                digests = [manifest['config']['digest']]
+                digests.extend(layer['digest'] for layer in manifest['layers'])
 
-            # First check existence of blob files
-            print("\nChecking existence of blob files...")
-            missing_blob_found = False
-            for digest in digests:
-                blob_file_name = digest.replace(':', '-')
-                blob_file_path = os.path.join(blobs_path, blob_file_name)
-                if not os.path.isfile(blob_file_path):
-                    print(f"Error: \033[31mMissing\033[0m blob file {blob_file_name} for digest {digest}.")
-                    missing_blob_found = True
-            
-            if missing_blob_found:
-                print("Aborting restore due to missing files.")
-                sys.exit(1)
-
-            # Ask user if they want to validate hashes
-            while True:
-                check_hashes = input("\nWould you like to validate file hashes before restoring? This may take some time for large files. (y/n): ").lower()
-                if check_hashes in ['y', 'n']:
-                    break
-                print("Please enter 'y' for yes or 'n' for no.")
-
-            if check_hashes == 'y':
-                print("\nValidating integrity of blob files (hash validation)...")
-                integrity_error_found = False
+                # First check existence of blob files
+                print("\nChecking existence of blob files...")
+                missing_blob_found = False
                 for digest in digests:
                     blob_file_name = digest.replace(':', '-')
                     blob_file_path = os.path.join(blobs_path, blob_file_name)
-                    # Validate the hash of the blob file
-                    expected_hash = digest.split(':')[1]
-                    with open(blob_file_path, 'rb') as blob_file:
-                        file_content = blob_file.read()
-                        actual_hash = hashlib.sha256(file_content).hexdigest()
-                        if actual_hash == expected_hash:
-                            print(f"\033[35m{blob_file_name}\033[32m OK\033[0m")
-                        else:
-                            print(f"\033[31m{blob_file_name}\033[0m \033[31mMismatch\033[0m")
-                            print(f"  Expected: {expected_hash}")
-                            print(f"  Actual:   {actual_hash}")
-                            integrity_error_found = True
+                    if not os.path.isfile(blob_file_path):
+                        print(f"Error: \033[31mMissing\033[0m blob file {blob_file_name} for digest {digest}.")
+                        missing_blob_found = True
+                
+                if missing_blob_found:
+                    print("Skipping this backup due to missing files.")
+                    continue
 
-                if integrity_error_found:
-                    print("Aborting restore due to hash validation failures.")
-                    sys.exit(1)
-            else:
-                print("\nSkipping hash validation.")
+                # Ask user if they want to validate hashes
+                while True:
+                    check_hashes = input("\nWould you like to validate file hashes before restoring? This may take some time for large files. (y/n): ").lower()
+                    if check_hashes in ['y', 'n']:
+                        break
+                    print("Please enter 'y' for yes or 'n' for no.")
 
-    print("\nProceeding with restore...")
-    restore_backup(selected_backup, ollama_base)
+                if check_hashes == 'y':
+                    print("\nValidating integrity of blob files (hash validation)...")
+                    integrity_error_found = False
+                    for digest in digests:
+                        blob_file_name = digest.replace(':', '-')
+                        blob_file_path = os.path.join(blobs_path, blob_file_name)
+                        # Validate the hash of the blob file
+                        expected_hash = digest.split(':')[1]
+                        with open(blob_file_path, 'rb') as blob_file:
+                            file_content = blob_file.read()
+                            actual_hash = hashlib.sha256(file_content).hexdigest()
+                            if actual_hash == expected_hash:
+                                print(f"\033[35m{blob_file_name}\033[32m OK\033[0m")
+                            else:
+                                print(f"\033[31m{blob_file_name}\033[0m \033[31mMismatch\033[0m")
+                                print(f"  Expected: {expected_hash}")
+                                print(f"  Actual:   {actual_hash}")
+                                integrity_error_found = True
+
+                    if integrity_error_found:
+                        print("Skipping this backup due to hash validation failures.")
+                        continue
+                else:
+                    print("\nSkipping hash validation.")
+
+        print(f"\nRestoring backup: {os.path.basename(selected_backup)}")
+        restore_backup(selected_backup, ollama_base)
+        print("-" * 50)
 
 def main():
     print("\033[36mChoose operation mode:\033[0m")
