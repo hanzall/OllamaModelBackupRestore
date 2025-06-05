@@ -24,7 +24,8 @@ This script is particularly useful for:
      
 ## Installation
 
-The script requires Python 3.x and can be run directly from the command line after installation. No additional libraries are required unless specified otherwise. 
+The script requires Python 3.x and can be run directly from the command line after installation. No additional libraries are required unless specified otherwise.
+
 ## Getting Started
 
 To use the Ollama model backup and restore functionality, follow these steps: 
