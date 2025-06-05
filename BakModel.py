@@ -95,7 +95,7 @@ def display_models(models):
 
 def get_multiple_selections(total_count, prompt):
     """
-    Get multiple selections from user input.
+    Get multiple selections from user input, including ranges.
     Args:
         total_count (int): Total number of items to select from
         prompt (str): The prompt to show to user
@@ -103,27 +103,36 @@ def get_multiple_selections(total_count, prompt):
         list: List of selected indices
     """
     while True:
-        print("\nEnter numbers separated by commas (e.g., 1,3,5)")
+        print("\nEnter numbers separated by commas (e.g., 1,3,5 or 4-9)")
         print("Enter 'a' to select all")
         print("Enter 'q' to quit")
         selection = input(prompt).strip().lower()
-        
+
         if selection == 'q':
             print("\033[32mExiting script.\033[0m")
             sys.exit(0)
         elif selection == 'a':
             return list(range(total_count))
-            
+
         try:
-            # Split by comma and convert to integers
-            indices = [int(x.strip()) for x in selection.split(',')]
+            indices = set()
+            for part in selection.split(','):
+                part = part.strip()
+                if '-' in part:
+                    start, end = map(int, part.split('-'))
+                    if start > end:
+                        raise ValueError("Invalid range: start cannot be greater than end.")
+                    indices.update(range(start, end + 1))
+                else:
+                    indices.add(int(part))
+
             # Validate all indices
             if all(0 <= idx < total_count for idx in indices):
-                return sorted(set(indices))  # Remove duplicates and sort
+                return sorted(indices)  # Return sorted list of unique indices
             else:
                 print(f"Invalid selection. Please enter numbers between 0 and {total_count-1}")
         except ValueError:
-            print("Invalid input. Please enter numbers separated by commas, 'a' for all, or 'q' to quit")
+            print("Invalid input. Please enter numbers separated by commas, ranges (e.g., 4-9), 'a' for all, or 'q' to quit")
 
 def get_user_selection(models):
     """Get one or multiple model selections from user."""
@@ -528,6 +537,13 @@ def restore_mode():
 
     backup_folders = list_backups(backup_root)
     selected_backups = get_backup_selection(backup_folders)
+
+    # Show selected backups
+    print("\nSelected backups for restoration:")
+    for backup in selected_backups:
+        model_name = analyze_backup_folder(backup)['name']  # Extract model name
+        parameters= analyze_backup_folder(backup)['parameters']
+        print(f"  - {model_name}:{parameters}")
 
     # Ask user for restore destination
     default_ollama_path = os.getenv('OLLAMA_MODELS', '')
